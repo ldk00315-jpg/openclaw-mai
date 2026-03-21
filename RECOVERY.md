@@ -119,3 +119,20 @@ sha256sum -c /path/to/backup-file.tar.gz.sha256
 3. `openclaw status` でチャンネルとGateway確認
 4. Telegramでテスト送信
 5. 問題なければ新しいバックアップを取り直す
+
+---
+
+## 7. 権限を戻す手順（NOPASSWD sudo を解除）
+
+全権限運用をやめるときは、次を実行:
+
+```bash
+sudo rm -f /etc/sudoers.d/99-tomoyuki-nopasswd
+sudo -k
+```
+
+確認:
+
+```bash
+sudo -n true && echo "まだNOPASSWD" || echo "NOPASSWD解除済み"
+```
