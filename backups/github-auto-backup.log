@@ -1,1 +1,7 @@
 [2026-03-22 22:33:30] start github auto backup
+git@github.com: Permission denied (publickey).
+fatal: Could not read from remote repository.
+
+Please make sure you have the correct access rights
+and the repository exists.
+[2026-03-22 22:34:35] start github auto backup
