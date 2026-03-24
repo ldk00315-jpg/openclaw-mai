@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 OpenClaw API Quota Checker
-Sends minimal test requests to each provider and reads rate limit headers.
+Reads configured models from openclaw.json and checks each provider.
 """
 
 import json
@@ -17,11 +17,7 @@ AUTH_FILE = OPENCLAW_DIR / 'agents' / 'main' / 'agent' / 'auth-profiles.json'
 UA = 'openclaw-quota-check/1.0'
 
 
-def load_api_keys():
-    """Load API keys from env vars, openclaw.json, and auth-profiles.json"""
-    keys = {}
-
-    # Read openclaw.json
+def load_config():
     cfg = {}
     try:
         with open(CONFIG_FILE) as f:
@@ -29,10 +25,6 @@ def load_api_keys():
     except Exception:
         pass
 
-    cfg_env = cfg.get('env', {})
-    providers = cfg.get('models', {}).get('providers', {})
-
-    # Read auth-profiles.json
     auth_profiles = {}
     try:
         with open(AUTH_FILE) as f:
@@ -41,55 +33,45 @@ def load_api_keys():
     except Exception:
         pass
 
-    # Groq: env -> openclaw.json providers -> openclaw.json env
-    keys['groq'] = (
-        os.environ.get('GROQ_API_KEY')
-        or providers.get('groq', {}).get('apiKey')
-        or cfg_env.get('GROQ_API_KEY')
-    )
+    return cfg, auth_profiles
 
-    # Gemini: env -> openclaw.json env -> auth-profiles
-    keys['gemini'] = (
-        os.environ.get('GEMINI_API_KEY')
-        or cfg_env.get('GEMINI_API_KEY')
-        or auth_profiles.get('google:default', {}).get('key')
-    )
 
-    # Mistral: env -> openclaw.json env
-    keys['mistral'] = (
-        os.environ.get('MISTRAL_API_KEY')
-        or cfg_env.get('MISTRAL_API_KEY')
-    )
+def get_api_key(provider, cfg, auth_profiles):
+    cfg_env = cfg.get('env', {})
+    providers = cfg.get('models', {}).get('providers', {})
 
-    # OpenRouter: env -> auth-profiles
-    keys['openrouter'] = (
-        os.environ.get('OPENROUTER_API_KEY')
-        or auth_profiles.get('openrouter:default', {}).get('key')
-        or auth_profiles.get('openrouter:manual', {}).get('key')
-    )
-
-    return keys
+    if provider == 'groq':
+        return (os.environ.get('GROQ_API_KEY')
+                or providers.get('groq', {}).get('apiKey')
+                or cfg_env.get('GROQ_API_KEY'))
+    elif provider == 'google':
+        return (os.environ.get('GEMINI_API_KEY')
+                or cfg_env.get('GEMINI_API_KEY')
+                or auth_profiles.get('google:default', {}).get('key'))
+    elif provider == 'mistral':
+        return (os.environ.get('MISTRAL_API_KEY')
+                or cfg_env.get('MISTRAL_API_KEY'))
+    elif provider == 'openrouter':
+        return (os.environ.get('OPENROUTER_API_KEY')
+                or auth_profiles.get('openrouter:default', {}).get('key')
+                or auth_profiles.get('openrouter:manual', {}).get('key'))
+    return None
 
 
 def send_request(url, headers, data=None, timeout=15):
-    """Send HTTP request and return (status_code, response_headers, body_preview)"""
     req = Request(url, headers=headers)
     if data is not None:
         req.data = json.dumps(data).encode('utf-8')
         req.add_header('Content-Type', 'application/json')
-
     try:
         resp = urlopen(req, timeout=timeout)
-        resp_headers = dict(resp.headers)
-        body = resp.read().decode('utf-8', errors='replace')[:500]
-        return resp.status, resp_headers, body
+        return resp.status, dict(resp.headers), resp.read().decode('utf-8', errors='replace')[:500]
     except HTTPError as e:
-        resp_headers = dict(e.headers)
         try:
             body = e.read().decode('utf-8', errors='replace')[:500]
         except Exception:
             body = ''
-        return e.code, resp_headers, body
+        return e.code, dict(e.headers), body
     except URLError as e:
         return None, {}, f'Connection error: {e.reason}'
     except Exception as e:
@@ -97,10 +79,8 @@ def send_request(url, headers, data=None, timeout=15):
 
 
 def parse_ratelimit_headers(headers):
-    """Extract rate limit info from response headers"""
     info = {}
     h = {k.lower(): v for k, v in headers.items()}
-
     for prefix in ['x-ratelimit-', 'ratelimit-']:
         if f'{prefix}remaining-requests' in h:
             info['remaining_req'] = h[f'{prefix}remaining-requests']
@@ -114,17 +94,13 @@ def parse_ratelimit_headers(headers):
             info['reset'] = h[f'{prefix}reset-requests']
         elif f'{prefix}reset' in h:
             info['reset'] = h[f'{prefix}reset']
-
     if 'retry-after' in h:
         info['retry_after'] = h['retry-after']
-
     return info
 
 
-def format_status(status_code, headers, body, provider_name):
-    """Format the check result for display"""
+def format_status(status_code, headers, body):
     lines = []
-
     if status_code is None:
         lines.append('  Status: CONNECTION ERROR')
         lines.append(f'  Detail: {body[:150]}')
@@ -140,6 +116,8 @@ def format_status(status_code, headers, body, provider_name):
         lines.append(f'  Status: AUTH ERROR ({status_code})')
     elif status_code == 413:
         lines.append('  Status: REQUEST TOO LARGE')
+    elif status_code == 404:
+        lines.append('  Status: MODEL NOT FOUND (404)')
     else:
         lines.append(f'  Status: ERROR ({status_code})')
 
@@ -155,11 +133,9 @@ def format_status(status_code, headers, body, provider_name):
     if status_code >= 400:
         try:
             err = json.loads(body)
-            msg = (
-                err.get('error', {}).get('message', '')
-                or err.get('message', '')
-                or err.get('error', '')
-            )
+            msg = (err.get('error', {}).get('message', '')
+                   or err.get('message', '')
+                   or err.get('error', ''))
             if isinstance(msg, str) and msg:
                 lines.append(f'  Detail: {msg[:150]}')
         except Exception:
@@ -172,103 +148,93 @@ def format_status(status_code, headers, body, provider_name):
     return '\n'.join(lines)
 
 
-def check_groq(api_key):
-    status, headers, body = send_request(
-        'https://api.groq.com/openai/v1/chat/completions',
-        {'Authorization': f'Bearer {api_key}', 'User-Agent': UA},
-        {
-            'model': 'llama-3.3-70b-versatile',
-            'messages': [{'role': 'user', 'content': 'hi'}],
-            'max_tokens': 1
-        }
-    )
-    return format_status(status, headers, body, 'Groq')
+def check_model(provider, model, api_key):
+    if provider == 'groq':
+        status, headers, body = send_request(
+            'https://api.groq.com/openai/v1/chat/completions',
+            {'Authorization': f'Bearer {api_key}', 'User-Agent': UA},
+            {'model': model, 'messages': [{'role': 'user', 'content': 'hi'}], 'max_tokens': 1})
+        return format_status(status, headers, body)
+
+    elif provider == 'mistral':
+        status, headers, body = send_request(
+            'https://api.mistral.ai/v1/chat/completions',
+            {'Authorization': f'Bearer {api_key}', 'User-Agent': UA},
+            {'model': model, 'messages': [{'role': 'user', 'content': 'hi'}], 'max_tokens': 1})
+        return format_status(status, headers, body)
+
+    elif provider == 'google':
+        url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}'
+        status, headers, body = send_request(
+            url, {'User-Agent': UA},
+            {'contents': [{'parts': [{'text': 'hi'}]}], 'generationConfig': {'maxOutputTokens': 1}})
+        return format_status(status, headers, body)
+
+    elif provider == 'openrouter':
+        status, headers, body = send_request(
+            'https://openrouter.ai/api/v1/chat/completions',
+            {'Authorization': f'Bearer {api_key}', 'User-Agent': UA},
+            {'model': model, 'messages': [{'role': 'user', 'content': 'hi'}], 'max_tokens': 1})
+        return format_status(status, headers, body)
+
+    return '  Status: unknown provider'
 
 
-def check_mistral(api_key):
-    status, headers, body = send_request(
-        'https://api.mistral.ai/v1/chat/completions',
-        {'Authorization': f'Bearer {api_key}', 'User-Agent': UA},
-        {
-            'model': 'mistral-small-latest',
-            'messages': [{'role': 'user', 'content': 'hi'}],
-            'max_tokens': 1
-        }
-    )
-    return format_status(status, headers, body, 'Mistral')
-
-
-def check_gemini(api_key):
-    url = (
-        'https://generativelanguage.googleapis.com/v1beta/'
-        f'models/gemini-2.5-flash-lite:generateContent?key={api_key}'
-    )
-    status, headers, body = send_request(
-        url,
-        {'User-Agent': UA},
-        {
-            'contents': [{'parts': [{'text': 'hi'}]}],
-            'generationConfig': {'maxOutputTokens': 1}
-        }
-    )
-    return format_status(status, headers, body, 'Gemini')
-
-
-def check_openrouter(api_key):
-    status, headers, body = send_request(
-        'https://openrouter.ai/api/v1/chat/completions',
-        {'Authorization': f'Bearer {api_key}', 'User-Agent': UA},
-        {
-            'model': 'meta-llama/llama-3.3-70b-instruct:free',
-            'messages': [{'role': 'user', 'content': 'hi'}],
-            'max_tokens': 1
-        }
-    )
-    return format_status(status, headers, body, 'OpenRouter')
+def parse_model_ref(model_ref):
+    parts = model_ref.split('/', 1)
+    if len(parts) == 2:
+        provider = parts[0]
+        model = parts[1]
+        if provider == 'openrouter':
+            return 'openrouter', model
+        return provider, model
+    return None, model_ref
 
 
 def main():
-    keys = load_api_keys()
+    cfg, auth_profiles = load_config()
+
+    defaults = cfg.get('agents', {}).get('defaults', {}).get('model', {})
+    primary = defaults.get('primary', '')
+    fallbacks = defaults.get('fallbacks', [])
+
+    all_models = [primary] + fallbacks if primary else fallbacks
 
     print('=== OpenClaw API Quota Status ===')
+    print(f'Primary: {primary}')
+    print(f'Fallbacks: {", ".join(fallbacks)}')
     print()
 
-    print('[Groq] llama-3.3-70b-versatile')
-    if keys.get('groq'):
-        print(check_groq(keys['groq']))
-    else:
-        print('  Status: API key not found')
-    print()
+    for model_ref in all_models:
+        provider, model = parse_model_ref(model_ref)
 
-    print('[Mistral] mistral-small-latest')
-    if keys.get('mistral'):
-        print(check_mistral(keys['mistral']))
-    else:
-        print('  Status: API key not found')
-    print()
+        if not provider:
+            continue
 
-    print('[Google Gemini] gemini-2.5-flash-lite')
-    if keys.get('gemini'):
-        print(check_gemini(keys['gemini']))
-    else:
-        print('  Status: API key not found')
-    print()
+        if provider in ('openai-codex', 'openai'):
+            print(f'[{model_ref}]')
+            print('  Status: OAuth - cannot check via API')
+            print('  Check: https://platform.openai.com/usage')
+            print()
+            continue
 
-    print('[OpenRouter] llama-3.3-70b-instruct:free')
-    if keys.get('openrouter'):
-        print(check_openrouter(keys['openrouter']))
-    else:
-        print('  Status: API key not found')
-    print()
+        if provider == 'qwen-portal':
+            print(f'[{model_ref}]')
+            print('  Status: OAuth - cannot check via API')
+            print('  Check: https://portal.qwen.ai')
+            print()
+            continue
 
-    print('[OpenAI Codex] gpt-5.3-codex')
-    print('  Status: OAuth - cannot check via API')
-    print('  Check: https://platform.openai.com/usage')
-    print()
+        api_key = get_api_key(provider, cfg, auth_profiles)
+        if not api_key:
+            print(f'[{model_ref}]')
+            print('  Status: API key not found')
+            print()
+            continue
 
-    print('[Qwen Portal] coder-model')
-    print('  Status: OAuth - cannot check via API')
-    print('  Check: https://portal.qwen.ai')
+        print(f'[{model_ref}]')
+        print(check_model(provider, model, api_key))
+        print()
 
 
 if __name__ == '__main__':
