@@ -262,3 +262,11 @@ Do NOT use the image_generate tool. Always use this script:
 python3 ~/.openclaw/workspace/skills/openrouter-image-gen/scripts/generate.py --prompt YOUR_PROMPT --telegram-send --chat-id 8719386273
 
 --telegram-send and --chat-id are mandatory. Without them the image will not be delivered to Telegram.
+
+## Verification Rules
+After any file creation or modification, ALWAYS verify the result:
+  - Run: cat <filepath> (to confirm file exists and content is correct)
+  - Run: ls -la <filepath> (to confirm file size is non-zero)
+Never tell the user "done" until you have verified the result.
+If verification fails, tell the user honestly that the operation failed.
+Never claim success without evidence.
