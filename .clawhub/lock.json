@@ -16,6 +16,10 @@
     "agent-browser": {
       "version": "0.2.0",
       "installedAt": 1774504512586
+    },
+    "scrapling-official": {
+      "version": "0.4.3",
+      "installedAt": 1774931979747
     }
   }
 }

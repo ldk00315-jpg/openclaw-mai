@@ -270,3 +270,8 @@ After any file creation or modification, ALWAYS verify the result:
 Never tell the user "done" until you have verified the result.
 If verification fails, tell the user honestly that the operation failed.
 Never claim success without evidence.
+
+## Scrapling
+When running Python scripts that use Scrapling, always use the virtual environment Python:
+~/.openclaw/scrapling-venv/bin/python
+
