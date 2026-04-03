@@ -69,28 +69,36 @@ def format_quote(name, qtype, price, prev):
 
 
 def fetch_weather():
-    body = curl_get('https://wttr.in/Komagane,Japan?format=j1')
+    """Fetch Komagane weather from tenki.jp (today's telop + high/low)."""
+    body = curl_get('https://tenki.jp/forecast/3/23/4830/20210/')
     if not body:
-        return 'ERROR: connection failed'
+        return 'ERROR: tenki.jp connection failed'
+
     try:
-        data = json.loads(body)
-        current = data.get('current_condition', [{}])[0]
-        today = data.get('weather', [{}])[0]
+        import re
 
-        temp_c = current.get('temp_C', '?')
-        weather_desc = ''
-        desc = current.get('lang_ja', [{}])
-        if desc:
-            weather_desc = desc[0].get('value', '')
-        if not weather_desc:
-            wd = current.get('weatherDesc', [{}])
-            if wd:
-                weather_desc = wd[0].get('value', '')
+        # Weather telop (e.g., 晴時々曇)
+        telop_match = re.search(r'<p class="weather-telop">\s*([^<]+?)\s*</p>', body)
+        telop = telop_match.group(1).strip() if telop_match else '天気不明'
 
-        max_temp = today.get('maxtempC', '?')
-        min_temp = today.get('mintempC', '?')
+        # Today high / low
+        high_match = re.search(
+            r'<dt class="high-temp sumarry">最高</dt>\s*<dd class="high-temp temp">\s*<span class="value">\s*([\-0-9]+)\s*</span>',
+            body,
+            re.S,
+        )
+        low_match = re.search(
+            r'<dt class="low-temp sumarry">最低</dt>\s*<dd class="low-temp temp">\s*<span class="value">\s*([\-0-9]+)\s*</span>',
+            body,
+            re.S,
+        )
 
-        return f'{weather_desc} / {temp_c}C (high {max_temp}C / low {min_temp}C)'
+        if not high_match or not low_match:
+            return 'ERROR: tenki.jp parse failed'
+
+        high_temp = high_match.group(1)
+        low_temp = low_match.group(1)
+        return f'{telop} (high {high_temp}C / low {low_temp}C) [tenki.jp]'
     except Exception as e:
         return f'ERROR: {str(e)[:80]}'
 
